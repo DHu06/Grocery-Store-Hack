@@ -1,0 +1,25 @@
+{
+  "name": "grocery-store-hack",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "",
+  "main": "test.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DHu06/Grocery-Store-Hack.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/DHu06/Grocery-Store-Hack/issues"
+  },
+  "homepage": "https://github.com/DHu06/Grocery-Store-Hack#readme",
+  "dependencies": {
+    "@google/genai": "^1.22.0",
+    "dotenv": "^17.2.3"
+  }
+}
