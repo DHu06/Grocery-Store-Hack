@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, TouchableOpacity,
-  FlatList, Image, Dimensions, Platform
+  FlatList, Platform
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { NavigationContainer } from '@react-navigation/native';
@@ -9,6 +9,22 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
+
+// ───────────────────────────────────────────────────────────────────────────────
+// CONFIG – REPLACE WITH YOUR OWN ADDRESSES
+// ───────────────────────────────────────────────────────────────────────────────
+// 1) The server that identifies an item from an image and returns JSON:
+//    expected response: { success: boolean, item: { name, brand, category, description, confidence } }
+const IDENTIFY_API = 'https://lee-puritanical-tidily.ngrok-free.dev'; // e.g. http://<your-mac-lan-ip>:3000
+
+// 2) The server that exposes GET /v1/prices/search
+//    returns: Row[] where Row = { store, price, location, lat?, lng?, distance_km? }
+const PRICES_API   = 'https://conducive-kingsley-extraversively.ngrok-free.dev'; // e.g. http://<your-mac-lan-ip>:3001
+
+// City is required in your backend
+const DEFAULT_CITY = 'Vancouver, British Columbia, Canada';
+
+// ───────────────────────────────────────────────────────────────────────────────
 
 const Tab = createBottomTabNavigator();
 
@@ -20,9 +36,6 @@ const COLORS = {
   pill: '#eef2f7',
   pin: '#5f8f5a',
 };
-
-// IMPORTANT: Replace with your computer's local IP address
-const API_URL = 'http://172.16.131.105:3000'; // Change XXX to your actual IP
 
 function HomeScreen() {
   const [location, setLocation] = useState({
@@ -76,25 +89,27 @@ function HomeScreen() {
   );
 }
 
-function ResultsScreen() {
-  const data = [
-    { id: '1', name: 'Item name', price: 0.0, store: 'Store name', km: 0.9 },
-    { id: '2', name: 'Item name', price: 0.0, store: 'Store name', km: 0.9 },
-    { id: '3', name: 'Item name', price: 0.0, store: 'Store name', km: 0.9 },
-    { id: '4', name: 'Item name', price: 0.0, store: 'Store name', km: 0.9 },
-  ];
+function ResultsScreen({ route }) {
+  const rows = route?.params?.rows || [];
+  const query = route?.params?.query || '';
+  const productInfo = route?.params?.productInfo || null;
 
   const ItemCard = ({ item }) => (
     <View style={styles.card}>
       <View style={styles.thumb} />
       <View style={styles.cardRight}>
-        <Text style={styles.itemTitle}>{item.name}</Text>
-        <Text style={styles.itemPrice}>${item.price.toFixed(2)}</Text>
+        <Text style={styles.itemTitle}>{query || 'Item'}</Text>
+        <Text style={styles.itemPrice}>${Number(item.price).toFixed(2)}</Text>
         <Text style={styles.storeRow}>
           {item.store}{' '}
-          <Text style={styles.kmText}>{item.km}km</Text>
+          {typeof item.distance_km === 'number' && isFinite(item.distance_km) && (
+            <Text style={styles.kmText}>{item.distance_km.toFixed(1)} km</Text>
+          )}
         </Text>
-        <View style={{ alignItems: 'flex-end' }}>
+        <Text numberOfLines={2} style={{ fontSize: 11, color: '#6b7280' }}>
+          {item.location}
+        </Text>
+        <View style={{ alignItems: 'flex-end', marginTop: 6 }}>
           <TouchableOpacity style={styles.pillButton} onPress={() => alert('Added!')}>
             <Text style={styles.pillText}>Add to list</Text>
           </TouchableOpacity>
@@ -106,16 +121,28 @@ function ResultsScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.filterRow}>
-        <TouchableOpacity onPress={() => alert('Open filters')}>
-          <Text style={styles.filterText}>Filter</Text>
-        </TouchableOpacity>
+        <Text style={styles.filterText}>
+          {query ? `Results for: ${query}` : 'Results'}
+        </Text>
       </View>
       <FlatList
-        data={data}
-        keyExtractor={(it) => it.id}
+        data={rows}
+        keyExtractor={(_, i) => String(i)}
         renderItem={({ item }) => <ItemCard item={item} />}
         contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
+        ListEmptyComponent={
+          <Text style={{ color: 'white', textAlign: 'center', marginTop: 24 }}>
+            No results yet.
+          </Text>
+        }
       />
+      {productInfo && (
+        <View style={{ paddingHorizontal: 16, paddingBottom: 24 }}>
+          <Text style={{ color: 'white', opacity: 0.8, fontSize: 12 }}>
+            Detected: {productInfo.brand ? `${productInfo.brand} ` : ''}{productInfo.name || ''}
+          </Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -126,9 +153,77 @@ function SearchScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
 
-useEffect(() => {
-   if (!permission?.granted) requestPermission();
-}, [permission]);
+  useEffect(() => {
+    if (!permission?.granted) requestPermission();
+  }, [permission]);
+
+  const getCoords = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return null;
+      const pos = await Location.getCurrentPositionAsync({});
+      return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    } catch {
+      return null;
+    }
+  };
+
+  const snap = async () => {
+    if (!camRef.current || loading) return;
+    try {
+      setLoading(true);
+
+      // 1) Take picture
+      const photo = await camRef.current.takePictureAsync({
+        quality: 0.7,
+        base64: true,
+      });
+
+      // 2) Call IDENTIFY API
+      const identifyResp = await fetch(`${IDENTIFY_API}/api/identify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: photo.base64 }),
+      });
+      if (!identifyResp.ok) throw new Error(`Identify error: ${identifyResp.status}`);
+      const identifyData = await identifyResp.json();
+      // Expected shape: { success, item: { name, brand, category, description, confidence } }
+      if (!identifyData?.success || !identifyData?.item) {
+        throw new Error(identifyData?.error || 'Identify failed');
+      }
+      const product = identifyData.item;
+      setResult(product);
+
+      // 3) Build q from brand + name
+      const { name, brand } = product;
+      const q = [brand, name].filter(Boolean).join(' ').trim();
+      if (!q) throw new Error('No name/brand returned from identify API');
+
+      // 4) Optional: get device coords for "closest"
+      const coords = await getCoords();
+
+      // 5) Build query params for PRICES API (city required)
+      const params = new URLSearchParams({
+        q,
+        city: DEFAULT_CITY,
+        top: '5',
+        ...(coords ? { lat: String(coords.lat), lng: String(coords.lng), sort: 'closest' } : {}),
+      });
+
+      // 6) Call PRICES API (GET)
+      const pricesResp = await fetch(`${PRICES_API}/v1/prices/search?${params.toString()}`);
+      if (!pricesResp.ok) throw new Error(`Prices error: ${pricesResp.status}`);
+      const rows = await pricesResp.json(); // array
+
+      // 7) Navigate to Results with data
+      navigation.navigate('Results', { rows, query: q, productInfo: product });
+    } catch (error) {
+      console.error('Error:', error);
+      alert('Failed: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (permission && !permission.granted) {
     return (
@@ -138,51 +233,10 @@ useEffect(() => {
     );
   }
 
-  const snap = async () => {
-    if (!camRef.current || loading) return;
-    
-    try {
-      setLoading(true);
-      
-      const photo = await camRef.current.takePictureAsync({
-        quality: 0.7,
-        base64: true,
-      });
-
-      console.log('Photo captured, sending to backend...');
-
-      const response = await fetch(`${API_URL}/api/identify`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ image: photo.base64 }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
-
-      const data = await response.json();
-
-      if (data.success) {
-        setResult(data.item);
-        console.log('Item identified:', data.item);
-      } else {
-        alert('Error: ' + data.error);
-      }
-    } catch (error) {
-      console.error('Error:', error);
-      alert('Failed to identify item: ' + error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <View style={styles.cameraScreen}>
-      <TouchableOpacity 
-        style={styles.backButton} 
+      <TouchableOpacity
+        style={styles.backButton}
         onPress={() => {
           setResult(null);
           navigation.navigate('Home');
@@ -191,11 +245,7 @@ useEffect(() => {
         <Ionicons name="arrow-back" size={28} color="black" />
       </TouchableOpacity>
 
-      <CameraView
-        ref={camRef}
-        style={StyleSheet.absoluteFill}
-        facing="back"
-      />
+      <CameraView ref={camRef} style={StyleSheet.absoluteFill} facing="back" />
 
       {loading && (
         <View style={styles.loadingOverlay}>
@@ -209,11 +259,11 @@ useEffect(() => {
         <View style={styles.resultOverlay}>
           <View style={styles.resultCard}>
             <Text style={styles.resultTitle}>{result.name}</Text>
-            <Text style={styles.resultText}>Brand: {result.brand}</Text>
-            <Text style={styles.resultText}>Category: {result.category}</Text>
-            <Text style={styles.resultText}>Description: {result.description}</Text>
-            <Text style={styles.resultText}>Confidence: {result.confidence}</Text>
-            <TouchableOpacity 
+            {result.brand ? <Text style={styles.resultText}>Brand: {result.brand}</Text> : null}
+            {result.category ? <Text style={styles.resultText}>Category: {result.category}</Text> : null}
+            {result.description ? <Text style={styles.resultText}>Description: {result.description}</Text> : null}
+            {result.confidence ? <Text style={styles.resultText}>Confidence: {result.confidence}</Text> : null}
+            <TouchableOpacity
               style={styles.closeButton}
               onPress={() => setResult(null)}
             >
@@ -224,8 +274,8 @@ useEffect(() => {
       )}
 
       <View style={styles.shutterRow}>
-        <TouchableOpacity 
-          style={[styles.shutter, loading && { opacity: 0.5 }]} 
+        <TouchableOpacity
+          style={[styles.shutter, loading && { opacity: 0.5 }]}
           onPress={snap}
           disabled={loading}
         />
@@ -254,15 +304,11 @@ export default function App() {
             borderTopWidth: 0,
             height: 64,
           },
-          tabBarIcon: ({ focused, color, size }) => {
+          tabBarIcon: ({ color }) => {
             let iconName;
-            if (route.name === 'Home') {
-              iconName = 'home';
-            } else if (route.name === 'Results') {
-              iconName = 'reorder-three';
-            } else {
-              iconName = 'camera';
-            }
+            if (route.name === 'Home') iconName = 'home';
+            else if (route.name === 'Results') iconName = 'reorder-three';
+            else iconName = 'camera';
             return <Ionicons name={iconName} size={24} color="white" />;
           },
         })}
@@ -300,7 +346,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 4,
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
   },
   filterText: {
     color: 'white',
@@ -383,8 +429,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#445a44',
     borderRadius: 999,
     alignItems: 'center',
-    justifyContent: 'center',
-    alignSelf:'center',
+    alignself: 'center',
     top: -18,
     shadowColor: '#000',
     shadowOpacity: 0.25,
@@ -392,7 +437,6 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 5,
   },
-
   loadingOverlay: {
     position: 'absolute',
     top: 0,
