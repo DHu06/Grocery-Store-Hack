@@ -13,15 +13,8 @@ import * as Location from 'expo-location';
 // ───────────────────────────────────────────────────────────────────────────────
 // CONFIG – REPLACE WITH YOUR OWN ADDRESSES
 // ───────────────────────────────────────────────────────────────────────────────
-// 1) The server that identifies an item from an image and returns JSON:
-//    expected response: { success: boolean, item: { name, brand, category, description, confidence } }
-const IDENTIFY_API = 'https://lee-puritanical-tidily.ngrok-free.dev'; // e.g. http://<your-mac-lan-ip>:3000
-
-// 2) The server that exposes GET /v1/prices/search
-//    returns: Row[] where Row = { store, price, location, lat?, lng?, distance_km? }
-const PRICES_API   = 'https://conducive-kingsley-extraversively.ngrok-free.dev'; // e.g. http://<your-mac-lan-ip>:3001
-
-// City is required in your backend
+const IDENTIFY_API = 'https://lee-puritanical-tidily.ngrok-free.dev';
+const PRICES_API   = 'https://conducive-kingsley-extraversively.ngrok-free.dev';
 const DEFAULT_CITY = 'Vancouver, British Columbia, Canada';
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -37,13 +30,19 @@ const COLORS = {
   pin: '#5f8f5a',
 };
 
-function HomeScreen() {
+function HomeScreen({ route }) {
   const [location, setLocation] = useState({
     latitude: 49.246292,
     longitude: -123.116226,
     latitudeDelta: 0.08,
     longitudeDelta: 0.06,
   });
+
+  const markers = route?.params?.markers || [];
+  const query = route?.params?.query || '';
+  
+  console.log('HomeScreen received markers:', JSON.stringify(markers, null, 2));
+  console.log('Markers count:', markers.length);
 
   useEffect(() => {
     (async () => {
@@ -59,19 +58,35 @@ function HomeScreen() {
     })();
   }, []);
 
-  const markers = [
-    { id: 'a', title: 'Store A', coord: { latitude: 49.25, longitude: -123.07 } },
-    { id: 'b', title: 'Store B', coord: { latitude: 49.24, longitude: -123.12 } },
-    { id: 'c', title: 'Store C', coord: { latitude: 49.26, longitude: -123.09 } },
-  ];
+  const mapRef = useRef(null);
+  useEffect(() => {
+    if (markers.length > 0 && mapRef.current) {
+      setTimeout(() => {
+        mapRef.current.fitToCoordinates(
+          markers.map(m => m.coord),
+          {
+            edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+            animated: true,
+          }
+        );
+      }, 500);
+    }
+  }, [markers]);
 
   return (
     <SafeAreaView style={styles.screen}>
+      {markers.length > 0 && (
+        <View style={styles.mapHeader}>
+          <Text style={styles.mapHeaderText}>
+            {query ? `Showing results for: ${query}` : 'Store locations'}
+          </Text>
+        </View>
+      )}
       <View style={styles.mapContainer}>
         <MapView
+          ref={mapRef}
           style={StyleSheet.absoluteFill}
           initialRegion={location}
-          region={location}
           showsUserLocation
           showsMyLocationButton
         >
@@ -80,6 +95,7 @@ function HomeScreen() {
               key={m.id}
               coordinate={m.coord}
               title={m.title}
+              description={m.description}
               pinColor={COLORS.pin}
             />
           ))}
@@ -89,10 +105,46 @@ function HomeScreen() {
   );
 }
 
-function ResultsScreen({ route }) {
+function ResultsScreen({ route, navigation }) {
   const rows = route?.params?.rows || [];
   const query = route?.params?.query || '';
   const productInfo = route?.params?.productInfo || null;
+
+  console.log('ResultsScreen - rows:', rows.length);
+  console.log('ResultsScreen - has lat/lng:', rows.some(r => r.lat && r.lng));
+
+  const handleViewOnMap = () => {
+    console.log('handleViewOnMap called!');
+    console.log('Raw rows:', JSON.stringify(rows, null, 2));
+    
+    const markers = rows
+      .filter(r => {
+        console.log(`Checking row: ${r.store}, lat: ${r.lat}, lng: ${r.lng}`);
+        return r.lat && r.lng && isFinite(r.lat) && isFinite(r.lng);
+      })
+      .map((r, i) => ({
+        id: String(i),
+        title: r.store,
+        description: `$${Number(r.price).toFixed(2)}${r.distance_km ? ` • ${r.distance_km.toFixed(1)} km` : ''}`,
+        coord: {
+          latitude: r.lat,
+          longitude: r.lng,
+        },
+      }));
+
+    console.log('Filtered markers:', JSON.stringify(markers, null, 2));
+    console.log('Number of markers:', markers.length);
+    
+    if (markers.length === 0) {
+      alert('No store locations available to show on map');
+      return;
+    }
+    
+    navigation.navigate('Home', { markers, query });
+  };
+
+  const showMapButton = rows.length > 0 && rows.some(r => r.lat && r.lng);
+  console.log('Should show map button:', showMapButton);
 
   const ItemCard = ({ item }) => (
     <View style={styles.card}>
@@ -119,6 +171,15 @@ function ResultsScreen({ route }) {
         <Text style={styles.filterText}>
           {query ? `Results for: ${query}` : 'Results'}
         </Text>
+        {showMapButton && (
+          <TouchableOpacity
+            style={styles.mapButton}
+            onPress={handleViewOnMap}
+          >
+            <Ionicons name="map" size={16} color="white" />
+            <Text style={styles.mapButtonText}>View on Map</Text>
+          </TouchableOpacity>
+        )}
       </View>
       <FlatList
         data={rows}
@@ -168,13 +229,11 @@ function SearchScreen({ navigation }) {
     try {
       setLoading(true);
 
-      // 1) Take picture
       const photo = await camRef.current.takePictureAsync({
         quality: 0.7,
         base64: true,
       });
 
-      // 2) Call IDENTIFY API
       const identifyResp = await fetch(`${IDENTIFY_API}/api/identify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -182,22 +241,18 @@ function SearchScreen({ navigation }) {
       });
       if (!identifyResp.ok) throw new Error(`Identify error: ${identifyResp.status}`);
       const identifyData = await identifyResp.json();
-      // Expected shape: { success, item: { name, brand, category, description, confidence } }
       if (!identifyData?.success || !identifyData?.item) {
         throw new Error(identifyData?.error || 'Identify failed');
       }
       const product = identifyData.item;
       setResult(product);
 
-      // 3) Build q from brand + name
       const { name, brand } = product;
       const q = [brand, name].filter(Boolean).join(' ').trim();
       if (!q) throw new Error('No name/brand returned from identify API');
 
-      // 4) Optional: get device coords for "closest"
       const coords = await getCoords();
 
-      // 5) Build query params for PRICES API (city required)
       const params = new URLSearchParams({
         q,
         city: DEFAULT_CITY,
@@ -205,12 +260,12 @@ function SearchScreen({ navigation }) {
         ...(coords ? { lat: String(coords.lat), lng: String(coords.lng), sort: 'closest' } : {}),
       });
 
-      // 6) Call PRICES API (GET)
       const pricesResp = await fetch(`${PRICES_API}/v1/prices/search?${params.toString()}`);
       if (!pricesResp.ok) throw new Error(`Prices error: ${pricesResp.status}`);
-      const rows = await pricesResp.json(); // array
+      const rows = await pricesResp.json();
 
-      // 7) Navigate to Results with data
+      console.log('Received rows from API:', JSON.stringify(rows, null, 2));
+
       navigation.navigate('Results', { rows, query: q, productInfo: product });
     } catch (error) {
       console.error('Error:', error);
@@ -237,7 +292,7 @@ function SearchScreen({ navigation }) {
           navigation.navigate('Home');
         }}
       >
-        <Ionicons name="arrow-back" size={28} color="black" />
+        <Ionicons name="arrow-back" size={28} color="white" />
       </TouchableOpacity>
 
       <CameraView ref={camRef} style={StyleSheet.absoluteFill} facing="back" />
@@ -313,9 +368,10 @@ export default function App() {
           name="Search"
           component={SearchScreen}
           options={{
+            tabBarStyle: {display: 'none'},
             tabBarButton: (props) => (
               <CircleTabButton {...props}>
-                <Ionicons name="camera" size={24} color="white" />
+                <Ionicons name="camera" size={24} color="white" style={{ transform: [{translateY: 14}]}}/>
               </CircleTabButton>
             ),
           }}
@@ -337,15 +393,41 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     overflow: 'hidden',
   },
+  mapHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 8,
+  },
+  mapHeaderText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   filterRow: {
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 4,
-    alignItems: 'flex-start',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   filterText: {
     color: 'white',
     fontSize: 14,
+  },
+  mapButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+  },
+  mapButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
   },
   card: {
     backgroundColor: COLORS.card,
@@ -385,7 +467,18 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.bg,
   },
-
+  backButton: {
+    position: 'absolute',
+    top: 50,
+    left: 20,
+    zIndex: 10,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   shutterRow: {
     position: 'absolute',
     bottom: 24,
