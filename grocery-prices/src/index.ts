@@ -2,7 +2,7 @@
  * Step 2 – Fully working backend that turns a product query string
  * into [{ store, price, location }] using:
  *  - SerpAPI (Google Shopping) for prices
- *  - Nominatim (OpenStreetMap) for store addresses
+ *  - Google Places API for geocoding (FAST)
  *
  * One-file hackathon edition (Express + TypeScript).
  */
@@ -21,12 +21,16 @@ app.use(express.json());
 
 const PORT = Number(process.env.PORT || 3001);
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
-const GOOGLE_PLACES_KEY = process.env.GOOGLE_PLACES_KEY; // Add this to .env
+const GOOGLE_PLACES_KEY = process.env.GOOGLE_PLACES_KEY;
 const DEFAULT_CITY = process.env.CITY || "Vancouver, British Columbia, Canada";
 
 if (!SERPAPI_KEY) {
   console.error("❌ Missing SERPAPI_KEY in .env");
   process.exit(1);
+}
+
+if (!GOOGLE_PLACES_KEY) {
+  console.warn("⚠️  GOOGLE_PLACES_KEY not set - geocoding will be SLOW (Nominatim fallback)");
 }
 
 // Basic rate limit (hackathon safe)
@@ -54,6 +58,43 @@ type Row = {
 type GeoHit = { address: string; lat?: number; lng?: number };
 
 // ───────────────────────────────────────────────────────────────────────────────
+// Blocklist: online-only stores without physical locations
+// ───────────────────────────────────────────────────────────────────────────────
+const ONLINE_ONLY_PATTERNS = [
+  /^ebay/i,
+  /^amazon/i,
+  /^etsy/i,
+  /^redbubble/i,
+  /^teepublic/i,
+  /^teespring/i,
+  /^aliexpress/i,
+  /^wish/i,
+  /^shein/i,
+  /^temu/i,
+  /uber\s*eats/i,
+  /door\s*dash/i,
+  /^instacart/i,
+  /^grubhub/i,
+  /skip\s*the\s*dishes/i,
+  /^walmart\.com/i,
+  /^target\.com/i,
+];
+
+function isOnlineOnlyStore(rawStore: string, normalizedStore: string): boolean {
+  const rawLower = rawStore.toLowerCase().trim();
+  const normLower = normalizedStore.toLowerCase().trim();
+  
+  // Check against patterns on BOTH raw and normalized names
+  for (const pattern of ONLINE_ONLY_PATTERNS) {
+    if (pattern.test(rawLower) || pattern.test(normLower)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
 // Caches
 // ───────────────────────────────────────────────────────────────────────────────
 const serpCache = new LRUCache<string, any>({ max: 300, ttl: 1000 * 60 * 3 }); // 3 minutes
@@ -66,21 +107,30 @@ function domainFromUrl(urlStr?: string): string | null {
   if (!urlStr) return null;
   try {
     const u = new URL(urlStr);
-    return u.hostname.replace(/^www\./, ""); // walmart.ca
+    return u.hostname.replace(/^www\./, "");
   } catch {
     return null;
   }
 }
 
 function normalizeStoreName(raw: string): string {
-  return raw
+  let normalized = raw
     .replace(/\.ca$|\.com$|\.net$|\.org$/i, "")
     .replace(/supercentre|supercenter/gi, "")
     .replace(/-/g, " ")
     .replace(/\binc\.?\b|\bltd\.?\b|\bcorp\.?\b/gi, "")
     .replace(/\s{2,}/g, " ")
-    .trim()
-    .replace(/\b\w/g, (c) => c.toUpperCase()); // Title Case
+    .trim();
+  
+  // Specific store normalization for major retailers
+  if (/walmart/i.test(normalized)) normalized = "Walmart";
+  if (/amazon/i.test(normalized)) normalized = "Amazon";
+  if (/costco/i.test(normalized)) normalized = "Costco";
+  if (/london\s*drugs/i.test(normalized)) normalized = "London Drugs";
+  if (/save\s*on\s*foods/i.test(normalized)) normalized = "Save On Foods";
+  if (/superstore/i.test(normalized)) normalized = "Superstore";
+  
+  return normalized.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function parsePrice(p: unknown): number | null {
@@ -102,7 +152,7 @@ function dedupeCheapest(rows: Row[]): Row[] {
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-// External calls: SerpAPI + Nominatim
+// External calls: SerpAPI
 // ───────────────────────────────────────────────────────────────────────────────
 async function fetchSerpShopping(query: string, city = DEFAULT_CITY) {
   const key = `serp:${query}:${city}`;
@@ -115,7 +165,7 @@ async function fetchSerpShopping(query: string, city = DEFAULT_CITY) {
     location: city,
     hl: "en",
     gl: "ca",
-    num: "20",
+    num: "40",
     api_key: SERPAPI_KEY!,
   });
   const url = `https://serpapi.com/search?${params.toString()}`;
@@ -134,7 +184,7 @@ async function fetchSerpShopping(query: string, city = DEFAULT_CITY) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Geocode store (returns address + lat/lng)
+// Geocode store - PARALLEL OPTIMIZED
 // ───────────────────────────────────────────────────────────────────────────────
 async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit> {
   const key = `geo:${store}:${city}`;
@@ -149,7 +199,6 @@ async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit>
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
-        console.log(`Google Places for "${store}":`, data.status, data.candidates?.length || 0);
         if (data.candidates?.[0]) {
           const place = data.candidates[0];
           const geo: GeoHit = {
@@ -166,15 +215,14 @@ async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit>
     }
   }
 
-  // Fallback to Nominatim
-  console.log(`Falling back to Nominatim for "${store}"`);
+  // Fallback to Nominatim (SLOW - sequential only)
   const q = encodeURIComponent(`${store} ${city}`);
   const url = `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1&addressdetails=1`;
   const res = await fetch(url, {
     headers: { "User-Agent": "hackathon-demo/1.0 (contact@example.com)" },
   });
   if (!res.ok) {
-    const fallback = { address: "Address unavailable" };
+    const fallback = { address: `${store} (location not found)` };
     geocodeCache.set(key, fallback);
     return fallback;
   }
@@ -182,7 +230,7 @@ async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit>
   const first = data?.[0];
   const geo: GeoHit = first
     ? { address: first.display_name, lat: Number(first.lat), lng: Number(first.lon) }
-    : { address: "Address unavailable" };
+    : { address: `${store} (location not found)` };
   geocodeCache.set(key, geo);
   return geo;
 }
@@ -211,8 +259,8 @@ const InputSchema = z.object({
     .string()
     .optional()
     .transform((s) => (s ? Number(s) : undefined))
-    .refine((n) => n == null || (Number.isInteger(n) && n > 0 && n <= 10), {
-      message: "top must be 1..10 if provided",
+    .refine((n) => n == null || (Number.isInteger(n) && n > 0 && n <= 20), {
+      message: "top must be 1..20 if provided",
     }),
   lat: z
     .string()
@@ -228,7 +276,7 @@ const InputSchema = z.object({
 });
 
 // ───────────────────────────────────────────────────────────────────────────────
-/** Endpoint: /v1/prices/search */
+/** Endpoint: /v1/prices/search - OPTIMIZED FOR SPEED */
 // ───────────────────────────────────────────────────────────────────────────────
 app.get("/v1/prices/search", async (req, res) => {
   try {
@@ -251,33 +299,43 @@ app.get("/v1/prices/search", async (req, res) => {
       ? serpa.shopping_results
       : [];
 
-    // 2) Rough rows
+    // 2) Rough rows - FILTER OUT ONLINE-ONLY STORES
     const rough: Row[] = [];
     for (const r of items) {
       const price = r.extracted_price ?? parsePrice(r.price);
       if (!price) continue;
       const rawStore: string = r.source || domainFromUrl(r.product_link) || "Unknown";
       const store = normalizeStoreName(rawStore);
+      
+      // Skip online-only stores (check BEFORE normalization removes identifiers)
+      if (isOnlineOnlyStore(rawStore, store)) {
+        console.log(`⏭️  Skipping online-only store: ${rawStore} -> ${store}`);
+        continue;
+      }
+      
       rough.push({ store, price, location: "…" });
     }
 
+    console.log(`📦 Raw items from SerpAPI: ${items.length}`);
+    console.log(`📦 After rough parsing & filtering: ${rough.length}`);
+
     // 3) Dedupe cheapest per store
     let rows = dedupeCheapest(rough);
+    console.log(`📦 After deduplication: ${rows.length}`);
 
     // 4) Sort logic
-    const limit = top ?? 3;
+    const limit = top ?? 5;
 
-    // Check if we can do distance sorting
+    // DISTANCE mode
     if (sort === "closest" && lat != null && lng != null) {
-      // DISTANCE mode - only geocode what we need (limit + buffer for failures)
-      const toGeocode = Math.min(limit + 3, rows.length);
+      const toGeocode = Math.min(limit * 3, rows.length);
       rows = rows.sort((a, b) => a.price - b.price).slice(0, toGeocode);
       
       console.log(`🗺️  Geocoding ${rows.length} stores for distance sorting...`);
+      const startTime = Date.now();
       
-      // Geocode in parallel if using Google Places, sequential if Nominatim
+      // PARALLEL geocoding (works with Google Places, must be sequential with Nominatim)
       if (GOOGLE_PLACES_KEY) {
-        // Parallel geocoding with Google Places (FAST!)
         await Promise.all(rows.map(async (r) => {
           const g = await geocodeStore(r.store, city);
           r.location = g.address;
@@ -285,14 +343,12 @@ app.get("/v1/prices/search", async (req, res) => {
           r.lng = g.lng;
           if (r.lat != null && r.lng != null) {
             r.distance_km = haversineKm(lat, lng, r.lat, r.lng);
-            console.log(`  ✓ ${r.store}: ${r.distance_km.toFixed(2)} km`);
           } else {
             r.distance_km = Number.POSITIVE_INFINITY;
-            console.log(`  ✗ ${r.store}: geocode failed`);
           }
         }));
       } else {
-        // Sequential with Nominatim rate limiting (SLOW)
+        // Sequential with Nominatim (SLOW)
         for (let i = 0; i < rows.length; i++) {
           const r = rows[i];
           const g = await geocodeStore(r.store, city);
@@ -301,24 +357,24 @@ app.get("/v1/prices/search", async (req, res) => {
           r.lng = g.lng;
           if (r.lat != null && r.lng != null) {
             r.distance_km = haversineKm(lat, lng, r.lat, r.lng);
-            console.log(`  ✓ ${r.store}: ${r.distance_km.toFixed(2)} km`);
           } else {
             r.distance_km = Number.POSITIVE_INFINITY;
-            console.log(`  ✗ ${r.store}: geocode failed`);
           }
-          // Respect Nominatim rate limit - wait 1.1s between requests
           if (i < rows.length - 1) {
             await new Promise(resolve => setTimeout(resolve, 1100));
           }
         }
       }
 
-      rows = rows
-        .filter((r) => r.location !== "Address unavailable")
-        .sort((a, b) => (a.distance_km! - b.distance_km!))
-        .slice(0, limit);
+      console.log(`⚡ Geocoding took ${Date.now() - startTime}ms`);
 
-      // Remove lat/lng from response
+      rows = rows.sort((a, b) => {
+        if (a.distance_km === Number.POSITIVE_INFINITY && b.distance_km === Number.POSITIVE_INFINITY) {
+          return a.price - b.price;
+        }
+        return a.distance_km! - b.distance_km!;
+      }).slice(0, limit);
+
       rows.forEach(r => {
         delete r.lat;
         delete r.lng;
@@ -327,18 +383,41 @@ app.get("/v1/prices/search", async (req, res) => {
       return res.json(rows);
     }
 
-    // PRICE mode (default or when coordinates unavailable)
-    rows = rows.sort((a, b) => a.price - b.price).slice(0, limit);
-    for (const r of rows) {
-      const g = await geocodeStore(r.store, city);
-      r.location = g.address;
-      r.lat = g.lat;
-      r.lng = g.lng;
+    // PRICE mode - PARALLEL OPTIMIZED
+    rows = rows.sort((a, b) => a.price - b.price).slice(0, limit * 2);
+    
+    console.log(`🗺️  Geocoding ${rows.length} stores for price mode...`);
+    const startTime = Date.now();
+    
+    // PARALLEL if Google Places, sequential if Nominatim
+    if (GOOGLE_PLACES_KEY) {
+      await Promise.all(rows.map(async (r) => {
+        const g = await geocodeStore(r.store, city);
+        r.location = g.address;
+        r.lat = g.lat;
+        r.lng = g.lng;
+      }));
+    } else {
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const g = await geocodeStore(r.store, city);
+        r.location = g.address;
+        r.lat = g.lat;
+        r.lng = g.lng;
+        if (i < rows.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1100));
+        }
+      }
     }
-    // Remove failed geocodes
-    rows = rows.filter((r) => r.location !== "Address unavailable");
-    rows.sort((a, b) => a.price - b.price);
+    
+    console.log(`⚡ Geocoding took ${Date.now() - startTime}ms`);
+    
+    rows = rows.sort((a, b) => a.price - b.price).slice(0, limit);
+    
+    console.log(`📦 Final result count: ${rows.length}`);
+    
     return res.json(rows);
+    
   } catch (err: any) {
     console.error("/v1/prices/search error", err);
     return res
