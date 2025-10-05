@@ -5,31 +5,6 @@
  *  - Nominatim (OpenStreetMap) for store addresses
  *
  * One-file hackathon edition (Express + TypeScript).
- *
- * ───────────────
- * Setup
- * ───────────────
- * npm init -y
- * npm i express node-fetch lru-cache zod express-rate-limit dotenv
- * npm i -D typescript ts-node @types/node @types/express
- * npx tsc --init
- *
- * .env
- *   PORT=3001
- *   SERPAPI_KEY=your_serpapi_key_here
- *   CITY="Vancouver, BC"
- *
- * package.json scripts
- *   "dev": "TS_NODE_TRANSPILE_ONLY=1 node -r dotenv/config -r ts-node/register src/index.ts",
- *   "build": "tsc -p .",
- *   "start": "node -r dotenv/config dist/index.js"
- *
- * Folder
- *   src/index.ts   ← put this file here
- *
- * Run
- *   npm run dev
- *   http://localhost:3001/v1/prices/search?q=coca%20cola%20355%20ml
  */
 
 import express from "express";
@@ -46,7 +21,7 @@ app.use(express.json());
 
 const PORT = Number(process.env.PORT || 3001);
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
-const DEFAULT_CITY = process.env.CITY || "Vancouver, BC";
+const DEFAULT_CITY = process.env.CITY || "Vancouver, British Columbia, Canada";
 
 if (!SERPAPI_KEY) {
   console.error("❌ Missing SERPAPI_KEY in .env");
@@ -55,7 +30,6 @@ if (!SERPAPI_KEY) {
 
 // Basic rate limit (hackathon safe)
 app.use(
-  
   rateLimit({
     windowMs: 60 * 1000,
     max: 60,
@@ -67,13 +41,22 @@ app.use(
 // ───────────────────────────────────────────────────────────────────────────────
 // Types
 // ───────────────────────────────────────────────────────────────────────────────
-type Row = { store: string; price: number; location: string };
+type Row = {
+  store: string;
+  price: number;
+  location: string;
+  lat?: number;
+  lng?: number;
+  distance_km?: number;
+};
+
+type GeoHit = { address: string; lat?: number; lng?: number };
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Caches
 // ───────────────────────────────────────────────────────────────────────────────
 const serpCache = new LRUCache<string, any>({ max: 300, ttl: 1000 * 60 * 3 }); // 3 minutes
-const geocodeCache = new LRUCache<string, string>({ max: 1000, ttl: 1000 * 60 * 60 }); // 1 hour
+const geocodeCache = new LRUCache<string, GeoHit>({ max: 1000, ttl: 1000 * 60 * 60 }); // 1 hour
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Helpers: parsing & normalization
@@ -135,14 +118,24 @@ async function fetchSerpShopping(query: string, city = DEFAULT_CITY) {
     api_key: SERPAPI_KEY!,
   });
   const url = `https://serpapi.com/search?${params.toString()}`;
+  console.log(`🔍 Fetching SerpAPI: ${url.replace(SERPAPI_KEY!, 'API_KEY_HIDDEN')}`);
+  
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`SerpAPI HTTP ${res.status}`);
+  if (!res.ok) {
+    const errorBody = await res.text();
+    console.error(`❌ SerpAPI Error (${res.status}):`, errorBody);
+    throw new Error(`SerpAPI HTTP ${res.status}: ${errorBody}`);
+  }
   const json = await res.json();
+  console.log(`✅ SerpAPI returned ${json.shopping_results?.length || 0} results`);
   serpCache.set(key, json);
   return json;
 }
 
-async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<string> {
+// ───────────────────────────────────────────────────────────────────────────────
+// Geocode store (returns address + lat/lng)
+// ───────────────────────────────────────────────────────────────────────────────
+async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit> {
   const key = `geo:${store}:${city}`;
   const hit = geocodeCache.get(key);
   if (hit) return hit;
@@ -153,13 +146,31 @@ async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<string>
     headers: { "User-Agent": "hackathon-demo/1.0 (contact@example.com)" },
   });
   if (!res.ok) {
-    geocodeCache.set(key, "Address unavailable");
-    return "Address unavailable";
+    const fallback = { address: "Address unavailable" };
+    geocodeCache.set(key, fallback);
+    return fallback;
   }
   const data = (await res.json()) as any[];
-  const address = data?.[0]?.display_name || "Address unavailable";
-  geocodeCache.set(key, address);
-  return address;
+  const first = data?.[0];
+  const geo: GeoHit = first
+    ? { address: first.display_name, lat: Number(first.lat), lng: Number(first.lon) }
+    : { address: "Address unavailable" };
+  geocodeCache.set(key, geo);
+  return geo;
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+/** Distance helper (Haversine) */
+// ───────────────────────────────────────────────────────────────────────────────
+function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371; // km
+  const toRad = (x: number) => (x * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -175,10 +186,21 @@ const InputSchema = z.object({
     .refine((n) => n == null || (Number.isInteger(n) && n > 0 && n <= 10), {
       message: "top must be 1..10 if provided",
     }),
+  lat: z
+    .string()
+    .optional()
+    .transform((s) => (s != null ? Number(s) : undefined))
+    .refine((n) => n == null || Number.isFinite(n!), { message: "lat must be a number" }),
+  lng: z
+    .string()
+    .optional()
+    .transform((s) => (s != null ? Number(s) : undefined))
+    .refine((n) => n == null || Number.isFinite(n!), { message: "lng must be a number" }),
+  sort: z.enum(["price", "closest"]).optional().default("price"),
 });
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Endpoint: /v1/prices/search
+/** Endpoint: /v1/prices/search */
 // ───────────────────────────────────────────────────────────────────────────────
 app.get("/v1/prices/search", async (req, res) => {
   try {
@@ -186,48 +208,76 @@ app.get("/v1/prices/search", async (req, res) => {
       q: req.query.q,
       city: req.query.city,
       top: req.query.top,
+      lat: req.query.lat,
+      lng: req.query.lng,
+      sort: req.query.sort,
     });
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.flatten() });
     }
-    const { q, city, top } = parsed.data;
+    const { q, city, top, lat, lng, sort } = parsed.data;
 
-    // 1) Query SerpAPI for shopping results
+    // 1) SerpAPI
     const serpa = await fetchSerpShopping(q, city);
     const items: any[] = Array.isArray(serpa?.shopping_results)
       ? serpa.shopping_results
       : [];
 
-    // 2) Convert to rough rows
+    // 2) Rough rows
     const rough: Row[] = [];
     for (const r of items) {
       const price = r.extracted_price ?? parsePrice(r.price);
       if (!price) continue;
-
       const rawStore: string = r.source || domainFromUrl(r.product_link) || "Unknown";
       const store = normalizeStoreName(rawStore);
       rough.push({ store, price, location: "…" });
     }
 
-    // 3) Keep cheapest per store
+    // 3) Dedupe cheapest per store
     let rows = dedupeCheapest(rough);
 
-    // 4) Top N (optional) BEFORE geocode (to save calls). Default top=3
+    // 4) Sort logic
     const limit = top ?? 3;
-    rows = rows.sort((a, b) => a.price - b.price).slice(0, limit);
 
-    // 5) Geocode addresses (sequential keeps Nominatim happy)
-    for (const r of rows) {
-      r.location = await geocodeStore(r.store, city);
+    // Check if we can do distance sorting
+    if (sort === "closest" && lat != null && lng != null) {
+      // DISTANCE mode - geocode all stores and calculate distances
+      for (const r of rows) {
+        const g = await geocodeStore(r.store, city);
+        r.location = g.address;
+        r.lat = g.lat;
+        r.lng = g.lng;
+        if (r.lat != null && r.lng != null) {
+          r.distance_km = haversineKm(lat, lng, r.lat, r.lng);
+        } else {
+          r.distance_km = Number.POSITIVE_INFINITY; // push undetermined to the end
+        }
+      }
+
+      rows = rows
+        .filter((r) => r.location !== "Address unavailable")
+        .sort((a, b) => (a.distance_km! - b.distance_km!))
+
+      return res.json(rows);
     }
 
-    // 6) Final sort and return
+    // PRICE mode (default or when coordinates unavailable)
+    rows = rows.sort((a, b) => a.price - b.price);
+    for (const r of rows) {
+      const g = await geocodeStore(r.store, city);
+      r.location = g.address;
+      r.lat = g.lat;
+      r.lng = g.lng;
+    }
+    // Remove failed geocodes
+    rows = rows.filter((r) => r.location !== "Address unavailable");
     rows.sort((a, b) => a.price - b.price);
-
     return res.json(rows);
   } catch (err: any) {
     console.error("/v1/prices/search error", err);
-    return res.status(500).json({ error: "Failed to fetch prices", details: err?.message || String(err) });
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch prices", details: err?.message || String(err) });
   }
 });
 
