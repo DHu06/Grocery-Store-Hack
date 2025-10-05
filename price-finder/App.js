@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, TouchableOpacity,
-  FlatList, Platform
+  FlatList, Platform, Image
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { NavigationContainer } from '@react-navigation/native';
@@ -40,9 +40,6 @@ function HomeScreen({ route }) {
 
   const markers = route?.params?.markers || [];
   const query = route?.params?.query || '';
-  
-  console.log('HomeScreen received markers:', JSON.stringify(markers, null, 2));
-  console.log('Markers count:', markers.length);
 
   useEffect(() => {
     (async () => {
@@ -110,18 +107,9 @@ function ResultsScreen({ route, navigation }) {
   const query = route?.params?.query || '';
   const productInfo = route?.params?.productInfo || null;
 
-  console.log('ResultsScreen - rows:', rows.length);
-  console.log('ResultsScreen - has lat/lng:', rows.some(r => r.lat && r.lng));
-
   const handleViewOnMap = () => {
-    console.log('handleViewOnMap called!');
-    console.log('Raw rows:', JSON.stringify(rows, null, 2));
-    
     const markers = rows
-      .filter(r => {
-        console.log(`Checking row: ${r.store}, lat: ${r.lat}, lng: ${r.lng}`);
-        return r.lat && r.lng && isFinite(r.lat) && isFinite(r.lng);
-      })
+      .filter(r => r.lat && r.lng && isFinite(r.lat) && isFinite(r.lng))
       .map((r, i) => ({
         id: String(i),
         title: r.store,
@@ -131,9 +119,6 @@ function ResultsScreen({ route, navigation }) {
           longitude: r.lng,
         },
       }));
-
-    console.log('Filtered markers:', JSON.stringify(markers, null, 2));
-    console.log('Number of markers:', markers.length);
     
     if (markers.length === 0) {
       alert('No store locations available to show on map');
@@ -144,22 +129,31 @@ function ResultsScreen({ route, navigation }) {
   };
 
   const showMapButton = rows.length > 0 && rows.some(r => r.lat && r.lng);
-  console.log('Should show map button:', showMapButton);
 
   const ItemCard = ({ item }) => (
     <View style={styles.card}>
-      <View style={styles.thumb} />
+      {item.imageUrl ? (
+        <Image 
+          source={{ uri: item.imageUrl }} 
+          style={styles.thumb}
+          resizeMode="cover"
+        />
+      ) : (
+        <View style={[styles.thumb, styles.thumbPlaceholder]}>
+          <Ionicons name="image-outline" size={40} color="#9ca3af" />
+        </View>
+      )}
       <View style={styles.cardRight}>
         <Text style={styles.itemTitle}>{query || 'Item'}</Text>
         <Text style={styles.itemPrice}>${Number(item.price).toFixed(2)}</Text>
         <Text style={styles.storeRow}>
           {item.store}{' '}
-          {typeof item.distance_km === 'number' && isFinite(item.distance_km) && (
+          {typeof item.distance_km === 'number' && isFinite(item.distance_km) ? (
             <Text style={styles.kmText}>{item.distance_km.toFixed(1)} km</Text>
-          )}
+          ) : null}
         </Text>
         <Text numberOfLines={2} style={{ fontSize: 11, color: '#6b7280' }}>
-          {item.location}
+          {item.location || 'Location not available'}
         </Text>
       </View>
     </View>
@@ -195,7 +189,7 @@ function ResultsScreen({ route, navigation }) {
       {productInfo && (
         <View style={{ paddingHorizontal: 16, paddingBottom: 24 }}>
           <Text style={{ color: 'white', opacity: 0.8, fontSize: 12 }}>
-            Detected: {productInfo.brand ? `${productInfo.brand} ` : ''}{productInfo.name || ''}
+            Detected: {productInfo.brand ? `${productInfo.brand} ` : ''}{productInfo.name || 'Unknown item'}
           </Text>
         </View>
       )}
@@ -245,10 +239,33 @@ function SearchScreen({ navigation }) {
         throw new Error(identifyData?.error || 'Identify failed');
       }
       const product = identifyData.item;
+      
+      // CHECK IF IT'S A FOOD ITEM
+      const category = (product.category || '').toLowerCase();
+      const name = (product.name || '').toLowerCase();
+      const description = (product.description || '').toLowerCase();
+      
+      const foodKeywords = ['food', 'grocery', 'snack', 'beverage', 'drink', 'sauce', 
+                           'noodle', 'pasta', 'cereal', 'bread', 'meat', 'dairy', 
+                           'vegetable', 'fruit', 'candy', 'chocolate', 'chip', 'cookie'];
+      
+      const isFoodItem = foodKeywords.some(keyword => 
+        category.includes(keyword) || 
+        name.includes(keyword) || 
+        description.includes(keyword)
+      );
+      
+      if (!isFoodItem) {
+        setResult(null);
+        alert('Please scan a food or grocery item.\n\nThis appears to be: ' + 
+              (product.category || product.name || 'a non-food item'));
+        return;
+      }
+      
       setResult(product);
 
-      const { name, brand } = product;
-      const q = [brand, name].filter(Boolean).join(' ').trim();
+      const { name: productName, brand } = product;
+      const q = [brand, productName].filter(Boolean).join(' ').trim();
       if (!q) throw new Error('No name/brand returned from identify API');
 
       const coords = await getCoords();
@@ -263,8 +280,6 @@ function SearchScreen({ navigation }) {
       const pricesResp = await fetch(`${PRICES_API}/v1/prices/search?${params.toString()}`);
       if (!pricesResp.ok) throw new Error(`Prices error: ${pricesResp.status}`);
       const rows = await pricesResp.json();
-
-      console.log('Received rows from API:', JSON.stringify(rows, null, 2));
 
       navigation.navigate('Results', { rows, query: q, productInfo: product });
     } catch (error) {
@@ -308,7 +323,7 @@ function SearchScreen({ navigation }) {
       {result && !loading && (
         <View style={styles.resultOverlay}>
           <View style={styles.resultCard}>
-            <Text style={styles.resultTitle}>{result.name}</Text>
+            <Text style={styles.resultTitle}>{result.name || 'Unknown Item'}</Text>
             {result.brand ? <Text style={styles.resultText}>Brand: {result.brand}</Text> : null}
             {result.category ? <Text style={styles.resultText}>Category: {result.category}</Text> : null}
             {result.description ? <Text style={styles.resultText}>Description: {result.description}</Text> : null}
@@ -440,6 +455,10 @@ const styles = StyleSheet.create({
   thumb: {
     width: 120,
     backgroundColor: COLORS.muted,
+  },
+  thumbPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   cardRight: {
     flex: 1,
