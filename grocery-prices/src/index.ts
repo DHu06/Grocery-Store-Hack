@@ -1,21 +1,9 @@
-/**
- * Step 2 – Fully working backend that turns a product query string
- * into [{ store, price, location }] using:
- *  - SerpAPI (Google Shopping) for prices
- *  - Nominatim (OpenStreetMap) for store addresses
- *
- * One-file hackathon edition (Express + TypeScript).
- */
-
 import express from "express";
 import fetch from "node-fetch";
 import { LRUCache } from "lru-cache";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Env + Constants
-// ───────────────────────────────────────────────────────────────────────────────
 const app = express();
 app.use(express.json());
 
@@ -24,11 +12,10 @@ const SERPAPI_KEY = process.env.SERPAPI_KEY;
 const DEFAULT_CITY = process.env.CITY || "Vancouver, British Columbia, Canada";
 
 if (!SERPAPI_KEY) {
-  console.error("❌ Missing SERPAPI_KEY in .env");
+  console.error("Missing SERPAPI_KEY in .env");
   process.exit(1);
 }
 
-// Basic rate limit (hackathon safe)
 app.use(
   rateLimit({
     windowMs: 60 * 1000,
@@ -38,9 +25,7 @@ app.use(
   })
 );
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Types
-// ───────────────────────────────────────────────────────────────────────────────
+
 type Row = {
   store: string;
   price: number;
@@ -52,15 +37,9 @@ type Row = {
 
 type GeoHit = { address: string; lat?: number; lng?: number };
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Caches
-// ───────────────────────────────────────────────────────────────────────────────
 const serpCache = new LRUCache<string, any>({ max: 300, ttl: 1000 * 60 * 3 }); // 3 minutes
 const geocodeCache = new LRUCache<string, GeoHit>({ max: 1000, ttl: 1000 * 60 * 60 }); // 1 hour
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Helpers: parsing & normalization
-// ───────────────────────────────────────────────────────────────────────────────
 function domainFromUrl(urlStr?: string): string | null {
   if (!urlStr) return null;
   try {
@@ -100,9 +79,6 @@ function dedupeCheapest(rows: Row[]): Row[] {
   return [...by.values()];
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// External calls: SerpAPI + Nominatim
-// ───────────────────────────────────────────────────────────────────────────────
 async function fetchSerpShopping(query: string, city = DEFAULT_CITY) {
   const key = `serp:${query}:${city}`;
   const cached = serpCache.get(key);
@@ -123,18 +99,15 @@ async function fetchSerpShopping(query: string, city = DEFAULT_CITY) {
   const res = await fetch(url);
   if (!res.ok) {
     const errorBody = await res.text();
-    console.error(`❌ SerpAPI Error (${res.status}):`, errorBody);
+    console.error(`SerpAPI Error (${res.status}):`, errorBody);
     throw new Error(`SerpAPI HTTP ${res.status}: ${errorBody}`);
   }
-  const json = await res.json();
-  console.log(`✅ SerpAPI returned ${json.shopping_results?.length || 0} results`);
-  serpCache.set(key, json);
-  return json;
+  const json: any = await res.json();
+console.log(`SerpAPI returned ${json.shopping_results?.length || 0} results`);
+serpCache.set(key, json);
+return json;
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Geocode store (returns address + lat/lng)
-// ───────────────────────────────────────────────────────────────────────────────
 async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit> {
   const key = `geo:${store}:${city}`;
   const hit = geocodeCache.get(key);
@@ -159,9 +132,6 @@ async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit>
   return geo;
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-/** Distance helper (Haversine) */
-// ───────────────────────────────────────────────────────────────────────────────
 function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6371; // km
   const toRad = (x: number) => (x * Math.PI) / 180;
@@ -173,9 +143,6 @@ function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): nu
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Input schema
-// ───────────────────────────────────────────────────────────────────────────────
 const InputSchema = z.object({
   q: z.string().min(1, "q is required"),
   city: z.string().optional().default(DEFAULT_CITY),
@@ -199,9 +166,6 @@ const InputSchema = z.object({
   sort: z.enum(["price", "closest"]).optional().default("price"),
 });
 
-// ───────────────────────────────────────────────────────────────────────────────
-/** Endpoint: /v1/prices/search */
-// ───────────────────────────────────────────────────────────────────────────────
 app.get("/v1/prices/search", async (req, res) => {
   try {
     const parsed = InputSchema.safeParse({
@@ -285,5 +249,5 @@ app.get("/v1/prices/search", async (req, res) => {
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
-  console.log(`✅ prices-api listening on http://localhost:${PORT}`);
+  console.log(`prices-api listening on http://localhost:${PORT}`);
 });
