@@ -109,11 +109,6 @@ function ResultsScreen({ route }) {
         <Text numberOfLines={2} style={{ fontSize: 11, color: '#6b7280' }}>
           {item.location}
         </Text>
-        <View style={{ alignItems: 'flex-end', marginTop: 6 }}>
-          <TouchableOpacity style={styles.pillButton} onPress={() => alert('Added!')}>
-            <Text style={styles.pillText}>Add to list</Text>
-          </TouchableOpacity>
-        </View>
       </View>
     </View>
   );
@@ -385,16 +380,6 @@ const styles = StyleSheet.create({
   },
   kmText: {
     color: '#6b7280',
-  },
-  pillButton: {
-    backgroundColor: COLORS.pill,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  pillText: {
-    color: '#374151',
-    fontSize: 12,
   },
   cameraScreen: {
     flex: 1,
