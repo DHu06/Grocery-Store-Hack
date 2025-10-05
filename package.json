@@ -20,6 +20,8 @@
   "homepage": "https://github.com/DHu06/Grocery-Store-Hack#readme",
   "dependencies": {
     "@google/genai": "^1.22.0",
-    "dotenv": "^17.2.3"
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0"
   }
 }
