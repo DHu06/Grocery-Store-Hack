@@ -49,7 +49,7 @@ app.post('/api/identify', async(req, res) => {
     }
 });
 
-app.post('api/sort-by-price', (req, res) => {
+app.post('/api/sort-by-price', (req, res) => {
     try {
         const {stores} = req.body;
         if (!stores) {
@@ -72,15 +72,46 @@ app.post('api/sort-by-price', (req, res) => {
     }
 });
 
-app.post('api/sort-by-distance', (req, res) => {
+app.post('/api/sort-by-distance', (req, res) => {
     try {
+        const {stores, userLocation} = req.body;
+        if (!stores || !userLocation) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing stores or userLocation'
+            });
+        }
 
-    } catch {
+        const withDistances = stores.map(store => {
+            const distance = sortByDistance(
+                userLocation.lat,
+                userLocation.lng,
+                store.location.lat,
+                store.location.lng
+            );
+            
+            return {
+                ...store,
+                distance: distance
+            };
+        });
 
+        const sorted = withDistances.sort((a, b) => a.distance - b.distance);
+        res.json({
+            success: true,
+            stores: sorted
+        });
+
+
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
     }
 });
 
-// Haversine formula to find shortest distance between two points
+// Haversine formula to find shortest distance between two points (in km)
 function sortByDistance(lat1, lng1, lat2, lng2) {
 
     // difference in latitude
