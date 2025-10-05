@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { identifyItem } from './image-analyzer.js';
+import { recommendStore } from './recommend-store.js';
 
 const app = express()
 const port = 3000
