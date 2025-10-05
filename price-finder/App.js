@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, SafeAreaView, TouchableOpacity,
-  FlatList, Platform, Image
+  FlatList, Image
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { NavigationContainer } from '@react-navigation/native';
@@ -10,14 +10,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 
-// ───────────────────────────────────────────────────────────────────────────────
-// CONFIG – REPLACE WITH YOUR OWN ADDRESSES
-// ───────────────────────────────────────────────────────────────────────────────
 const IDENTIFY_API = 'https://lee-puritanical-tidily.ngrok-free.dev';
 const PRICES_API   = 'https://conducive-kingsley-extraversively.ngrok-free.dev';
 const DEFAULT_CITY = 'Vancouver, British Columbia, Canada';
-
-// ───────────────────────────────────────────────────────────────────────────────
 
 const Tab = createBottomTabNavigator();
 
@@ -130,34 +125,36 @@ function ResultsScreen({ route, navigation }) {
 
   const showMapButton = rows.length > 0 && rows.some(r => r.lat && r.lng);
 
-  const ItemCard = ({ item }) => (
-    <View style={styles.card}>
-      {item.imageUrl ? (
-        <Image 
-          source={{ uri: item.imageUrl }} 
-          style={styles.thumb}
-          resizeMode="cover"
-        />
-      ) : (
-        <View style={[styles.thumb, styles.thumbPlaceholder]}>
-          <Ionicons name="image-outline" size={40} color="#9ca3af" />
+  const ItemCard = ({ item }) => {
+    return (
+      <View style={styles.card}>
+        {item.imageUrl ? (
+          <Image 
+            source={{ uri: item.imageUrl }} 
+            style={styles.thumb}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={[styles.thumb, styles.thumbPlaceholder]}>
+            <Ionicons name="image-outline" size={40} color="#9ca3af" />
+          </View>
+        )}
+        <View style={styles.cardRight}>
+          <Text style={styles.itemTitle}>{query || 'Item'}</Text>
+          <Text style={styles.itemPrice}>${Number(item.price).toFixed(2)}</Text>
+          <Text style={styles.storeRow}>
+            {item.store}{' '}
+            {typeof item.distance_km === 'number' && isFinite(item.distance_km) ? (
+              <Text style={styles.kmText}>{item.distance_km.toFixed(1)} km</Text>
+            ) : null}
+          </Text>
+          <Text numberOfLines={2} style={{ fontSize: 11, color: '#6b7280' }}>
+            {item.location || 'Location not available'}
+          </Text>
         </View>
-      )}
-      <View style={styles.cardRight}>
-        <Text style={styles.itemTitle}>{query || 'Item'}</Text>
-        <Text style={styles.itemPrice}>${Number(item.price).toFixed(2)}</Text>
-        <Text style={styles.storeRow}>
-          {item.store}{' '}
-          {typeof item.distance_km === 'number' && isFinite(item.distance_km) ? (
-            <Text style={styles.kmText}>{item.distance_km.toFixed(1)} km</Text>
-          ) : null}
-        </Text>
-        <Text numberOfLines={2} style={{ fontSize: 11, color: '#6b7280' }}>
-          {item.location || 'Location not available'}
-        </Text>
       </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -182,7 +179,7 @@ function ResultsScreen({ route, navigation }) {
         contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
         ListEmptyComponent={
           <Text style={{ color: 'white', textAlign: 'center', marginTop: 24 }}>
-            No results yet.
+            No results yet. Scan a food item to get started!
           </Text>
         }
       />
@@ -220,80 +217,128 @@ function SearchScreen({ navigation }) {
 
   const snap = async () => {
     if (!camRef.current || loading) return;
-    try {
-      setLoading(true);
+    
+    setLoading(true);
 
+    try {
       const photo = await camRef.current.takePictureAsync({
         quality: 0.7,
         base64: true,
       });
 
+      // STEP 1: Identify
       const identifyResp = await fetch(`${IDENTIFY_API}/api/identify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: photo.base64 }),
       });
-      if (!identifyResp.ok) throw new Error(`Identify error: ${identifyResp.status}`);
-      const identifyData = await identifyResp.json();
-      if (!identifyData?.success || !identifyData?.item) {
-        throw new Error(identifyData?.error || 'Identify failed');
-      }
-      const product = identifyData.item;
       
-      // CHECK IF IT'S A FOOD ITEM
+      if (!identifyResp.ok) {
+        throw new Error(`Identify API returned ${identifyResp.status}`);
+      }
+      
+      const identifyData = await identifyResp.json();
+      
+      if (!identifyData?.success || !identifyData?.item) {
+        throw new Error(identifyData?.error || 'Could not identify item');
+      }
+      
+      const product = identifyData.item;
+      console.log('Product identified:', product);
+
+      // STEP 2: Check if food IMMEDIATELY - BEFORE any state changes
       const category = (product.category || '').toLowerCase();
       const name = (product.name || '').toLowerCase();
       const description = (product.description || '').toLowerCase();
+      const brand = (product.brand || '').toLowerCase();
       
-      const foodKeywords = ['food', 'grocery', 'snack', 'beverage', 'drink', 'sauce', 
-                           'noodle', 'pasta', 'cereal', 'bread', 'meat', 'dairy', 
-                           'vegetable', 'fruit', 'candy', 'chocolate', 'chip', 'cookie'];
+      const foodKeywords = [
+        'food', 'grocery', 'snack', 'beverage', 'drink', 'sauce', 
+        'noodle', 'pasta', 'cereal', 'bread', 'meat', 'dairy', 
+        'vegetable', 'fruit', 'candy', 'chocolate', 'chip', 'cookie',
+        'ramen', 'instant', 'soup', 'meal', 'protein', 'bar',
+        'juice', 'soda', 'tea', 'coffee', 'milk', 'yogurt',
+        'cheese', 'butter', 'oil', 'spice', 'condiment', 'rice',
+        'bean', 'nut', 'cracker', 'popcorn', 'pretzel'
+      ];
       
       const isFoodItem = foodKeywords.some(keyword => 
         category.includes(keyword) || 
         name.includes(keyword) || 
-        description.includes(keyword)
+        description.includes(keyword) ||
+        brand.includes(keyword)
       );
       
       if (!isFoodItem) {
-        setResult(null);
-        alert('Please scan a food or grocery item.\n\nThis appears to be: ' + 
-              (product.category || product.name || 'a non-food item'));
-        return;
+        setLoading(false);
+        alert(
+          'Not a food item\n\n' +
+          'Please scan a food or grocery product.\n\n' +
+          'Detected: ' + (product.category || product.name || 'Unknown item')
+        );
+        return; // STOP - don't do anything else
       }
+
+      // STEP 3: Build search query
+      const { name: productName, brand: productBrand } = product;
+      const q = [productBrand, productName].filter(Boolean).join(' ').trim();
       
-      setResult(product);
+      if (!q) {
+        throw new Error('Could not extract product name');
+      }
 
-      const { name: productName, brand } = product;
-      const q = [brand, productName].filter(Boolean).join(' ').trim();
-      if (!q) throw new Error('No name/brand returned from identify API');
-
+      // STEP 4: Get prices
       const coords = await getCoords();
-
       const params = new URLSearchParams({
         q,
         city: DEFAULT_CITY,
         top: '5',
-        ...(coords ? { lat: String(coords.lat), lng: String(coords.lng), sort: 'closest' } : {}),
+        ...(coords ? { 
+          lat: String(coords.lat), 
+          lng: String(coords.lng), 
+          sort: 'closest' 
+        } : {}),
       });
 
       const pricesResp = await fetch(`${PRICES_API}/v1/prices/search?${params.toString()}`);
-      if (!pricesResp.ok) throw new Error(`Prices error: ${pricesResp.status}`);
+      
+      if (!pricesResp.ok) {
+        throw new Error(`Prices API returned ${pricesResp.status}`);
+      }
+      
       const rows = await pricesResp.json();
+      console.log('Prices received:', rows);
 
-      navigation.navigate('Results', { rows, query: q, productInfo: product });
-    } catch (error) {
-      console.error('Error:', error);
-      alert('Failed: ' + error.message);
-    } finally {
+      // STEP 5: Check if we got results
+      if (!rows || rows.length === 0) {
+        setLoading(false);
+        alert('No prices found for this item in your area.\n\nTry scanning a different product.');
+        return; // STOP
+      }
+
+      // STEP 6: Only NOW show success and navigate
+      setResult(product);
       setLoading(false);
+      
+      setTimeout(() => {
+        navigation.navigate('Results', { rows, query: q, productInfo: product });
+        setResult(null);
+      }, 1500);
+
+    } catch (error) {
+      console.error('Scan error:', error);
+      setLoading(false);
+      setResult(null);
+      alert('Error: ' + error.message);
     }
   };
 
   if (permission && !permission.granted) {
     return (
       <SafeAreaView style={[styles.screen, { justifyContent: 'center', alignItems: 'center' }]}>
-        <Text style={{ color: 'white' }}>Camera permission denied</Text>
+        <Text style={{ color: 'white', fontSize: 16, textAlign: 'center', paddingHorizontal: 20 }}>
+          Camera permission is required to scan products
+        </Text>
       </SafeAreaView>
     );
   }
@@ -323,17 +368,14 @@ function SearchScreen({ navigation }) {
       {result && !loading && (
         <View style={styles.resultOverlay}>
           <View style={styles.resultCard}>
+            <View style={{ alignItems: 'center', marginBottom: 10 }}>
+              <Ionicons name="checkmark-circle" size={48} color="#10b981" />
+            </View>
             <Text style={styles.resultTitle}>{result.name || 'Unknown Item'}</Text>
             {result.brand ? <Text style={styles.resultText}>Brand: {result.brand}</Text> : null}
-            {result.category ? <Text style={styles.resultText}>Category: {result.category}</Text> : null}
-            {result.description ? <Text style={styles.resultText}>Description: {result.description}</Text> : null}
-            {result.confidence ? <Text style={styles.resultText}>Confidence: {result.confidence}</Text> : null}
-            <TouchableOpacity
-              style={styles.closeButton}
-              onPress={() => setResult(null)}
-            >
-              <Text style={{ color: 'white', fontWeight: 'bold' }}>Scan Another</Text>
-            </TouchableOpacity>
+            <Text style={{ color: '#6b7280', fontSize: 14, marginTop: 8, textAlign: 'center' }}>
+              Finding prices...
+            </Text>
           </View>
         </View>
       )}
@@ -451,9 +493,15 @@ const styles = StyleSheet.create({
     padding: 0,
     overflow: 'hidden',
     marginBottom: 16,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
   },
   thumb: {
     width: 120,
+    height: 120,
     backgroundColor: COLORS.muted,
   },
   thumbPlaceholder: {
@@ -463,24 +511,28 @@ const styles = StyleSheet.create({
   cardRight: {
     flex: 1,
     padding: 16,
-    gap: 6,
+    justifyContent: 'center',
   },
   itemTitle: {
-    fontSize: 18,
+    fontSize: 16,
     color: COLORS.text,
     fontWeight: '600',
+    marginBottom: 4,
   },
   itemPrice: {
-    fontSize: 12,
-    color: '#6b7280',
+    fontSize: 20,
+    color: '#10b981',
+    fontWeight: 'bold',
+    marginBottom: 8,
   },
   storeRow: {
-    marginTop: 8,
-    fontSize: 12,
+    fontSize: 14,
     color: '#374151',
+    fontWeight: '500',
   },
   kmText: {
     color: '#6b7280',
+    fontWeight: 'normal',
   },
   cameraScreen: {
     flex: 1,
@@ -491,7 +543,7 @@ const styles = StyleSheet.create({
     top: 50,
     left: 20,
     zIndex: 10,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -546,7 +598,7 @@ const styles = StyleSheet.create({
   },
   resultCard: {
     backgroundColor: 'white',
-    padding: 20,
+    padding: 24,
     borderRadius: 16,
     shadowColor: '#000',
     shadowOpacity: 0.3,
@@ -557,13 +609,15 @@ const styles = StyleSheet.create({
   resultTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    marginBottom: 10,
+    marginBottom: 8,
     color: '#111827',
+    textAlign: 'center',
   },
   resultText: {
     fontSize: 14,
-    marginBottom: 6,
+    marginBottom: 4,
     color: '#374151',
+    textAlign: 'center',
   },
   closeButton: {
     marginTop: 12,
