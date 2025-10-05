@@ -21,6 +21,7 @@ app.use(express.json());
 
 const PORT = Number(process.env.PORT || 3001);
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
+const GOOGLE_PLACES_KEY = process.env.GOOGLE_PLACES_KEY; // Add this to .env
 const DEFAULT_CITY = process.env.CITY || "Vancouver, British Columbia, Canada";
 
 if (!SERPAPI_KEY) {
@@ -140,6 +141,33 @@ async function geocodeStore(store: string, city = DEFAULT_CITY): Promise<GeoHit>
   const hit = geocodeCache.get(key);
   if (hit) return hit;
 
+  // Try Google Places first if API key available
+  if (GOOGLE_PLACES_KEY) {
+    try {
+      const q = encodeURIComponent(`${store} ${city}`);
+      const url = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${q}&inputtype=textquery&fields=formatted_address,geometry&key=${GOOGLE_PLACES_KEY}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        console.log(`Google Places for "${store}":`, data.status, data.candidates?.length || 0);
+        if (data.candidates?.[0]) {
+          const place = data.candidates[0];
+          const geo: GeoHit = {
+            address: place.formatted_address,
+            lat: place.geometry?.location?.lat,
+            lng: place.geometry?.location?.lng,
+          };
+          geocodeCache.set(key, geo);
+          return geo;
+        }
+      }
+    } catch (err) {
+      console.error('Google Places error for', store, ':', err);
+    }
+  }
+
+  // Fallback to Nominatim
+  console.log(`Falling back to Nominatim for "${store}"`);
   const q = encodeURIComponent(`${store} ${city}`);
   const url = `https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1&addressdetails=1`;
   const res = await fetch(url, {
@@ -241,30 +269,60 @@ app.get("/v1/prices/search", async (req, res) => {
 
     // Check if we can do distance sorting
     if (sort === "closest" && lat != null && lng != null) {
-      // DISTANCE mode - first sort by price to get cheapest candidates, then geocode top 15
-      rows = rows.sort((a, b) => a.price - b.price).slice(0, Math.min(15, rows.length));
+      // DISTANCE mode - only geocode what we need (limit + buffer for failures)
+      const toGeocode = Math.min(limit + 3, rows.length);
+      rows = rows.sort((a, b) => a.price - b.price).slice(0, toGeocode);
       
       console.log(`🗺️  Geocoding ${rows.length} stores for distance sorting...`);
-      for (const r of rows) {
-        const g = await geocodeStore(r.store, city);
-        r.location = g.address;
-        r.lat = g.lat;
-        r.lng = g.lng;
-        if (r.lat != null && r.lng != null) {
-          r.distance_km = haversineKm(lat, lng, r.lat, r.lng);
-          console.log(`  ✓ ${r.store}: ${r.distance_km.toFixed(2)} km`);
-        } else {
-          r.distance_km = Number.POSITIVE_INFINITY;
-          console.log(`  ✗ ${r.store}: geocode failed`);
+      
+      // Geocode in parallel if using Google Places, sequential if Nominatim
+      if (GOOGLE_PLACES_KEY) {
+        // Parallel geocoding with Google Places (FAST!)
+        await Promise.all(rows.map(async (r) => {
+          const g = await geocodeStore(r.store, city);
+          r.location = g.address;
+          r.lat = g.lat;
+          r.lng = g.lng;
+          if (r.lat != null && r.lng != null) {
+            r.distance_km = haversineKm(lat, lng, r.lat, r.lng);
+            console.log(`  ✓ ${r.store}: ${r.distance_km.toFixed(2)} km`);
+          } else {
+            r.distance_km = Number.POSITIVE_INFINITY;
+            console.log(`  ✗ ${r.store}: geocode failed`);
+          }
+        }));
+      } else {
+        // Sequential with Nominatim rate limiting (SLOW)
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          const g = await geocodeStore(r.store, city);
+          r.location = g.address;
+          r.lat = g.lat;
+          r.lng = g.lng;
+          if (r.lat != null && r.lng != null) {
+            r.distance_km = haversineKm(lat, lng, r.lat, r.lng);
+            console.log(`  ✓ ${r.store}: ${r.distance_km.toFixed(2)} km`);
+          } else {
+            r.distance_km = Number.POSITIVE_INFINITY;
+            console.log(`  ✗ ${r.store}: geocode failed`);
+          }
+          // Respect Nominatim rate limit - wait 1.1s between requests
+          if (i < rows.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1100));
+          }
         }
-        // Respect Nominatim rate limit (1 req/sec)
-        await new Promise(resolve => setTimeout(resolve, 1100));
       }
 
       rows = rows
         .filter((r) => r.location !== "Address unavailable")
         .sort((a, b) => (a.distance_km! - b.distance_km!))
         .slice(0, limit);
+
+      // Remove lat/lng from response
+      rows.forEach(r => {
+        delete r.lat;
+        delete r.lng;
+      });
 
       return res.json(rows);
     }
