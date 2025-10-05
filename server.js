@@ -127,7 +127,39 @@ function sortByDistance(lat1, lng1, lat2, lng2) {
 
     return r * c;
 
-} 
+}
+
+app.post('/api/recommend-store', async (req, res) => {
+    try {
+        const { stores, userLocation, userPreferences } = req.body;
+        
+        if (!stores || !userLocation) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing stores or userLocation'
+            });
+        }
+        
+        const result = await recommendStore(
+            stores,
+            userLocation,
+            userPreferences,
+            process.env.GEMINI_API_KEY
+        );
+        
+        res.json({
+            success: true,
+            ...result
+        });
+        
+    } catch (error) {
+        console.error('Error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
   
 app.listen(port, () => {
     console.log(`Server listening on port ${port}`)
