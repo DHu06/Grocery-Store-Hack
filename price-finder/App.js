@@ -384,13 +384,15 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: -18,
+    alignSelf:'center',
+    top: -18,
     shadowColor: '#000',
     shadowOpacity: 0.25,
     shadowRadius: 5,
     shadowOffset: { width: 0, height: 3 },
     elevation: 5,
   },
+
   loadingOverlay: {
     position: 'absolute',
     top: 0,
