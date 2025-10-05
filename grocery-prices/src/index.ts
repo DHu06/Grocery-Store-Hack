@@ -375,11 +375,7 @@ app.get("/v1/prices/search", async (req, res) => {
         return a.distance_km! - b.distance_km!;
       }).slice(0, limit);
 
-      rows.forEach(r => {
-        delete r.lat;
-        delete r.lng;
-      });
-
+      // KEEP lat/lng in response for map pins
       return res.json(rows);
     }
 
@@ -416,6 +412,7 @@ app.get("/v1/prices/search", async (req, res) => {
     
     console.log(`📦 Final result count: ${rows.length}`);
     
+    // KEEP lat/lng in response for map pins
     return res.json(rows);
     
   } catch (err: any) {
