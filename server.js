@@ -131,7 +131,7 @@ function sortByDistance(lat1, lng1, lat2, lng2) {
 
 app.post('/api/recommend-store', async (req, res) => {
     try {
-        const { stores, userLocation, userPreferences } = req.body;
+        const {stores, userLocation} = req.body;
         
         if (!stores || !userLocation) {
             return res.status(400).json({
@@ -143,7 +143,6 @@ app.post('/api/recommend-store', async (req, res) => {
         const result = await recommendStore(
             stores,
             userLocation,
-            userPreferences,
             process.env.GEMINI_API_KEY
         );
         

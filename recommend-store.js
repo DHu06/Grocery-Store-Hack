@@ -1,10 +1,10 @@
 import { GoogleGenAI } from '@google/genai';
 /**
  * What does this file do? 
- * Recommends best store based on price, distance and user preferences.
+ * Recommends best store considering price and distance.
  **/
 
-export async function recommendStore(stores, userLocation, userPreferences, apiKey) {
+export async function recommendStore(stores, userLocation, apiKey) {
     const ai = new GoogleGenAI(apiKey);
 
     const withDistances = stores.map(store => {
@@ -21,14 +21,12 @@ export async function recommendStore(stores, userLocation, userPreferences, apiK
         };
     });
 
-    const preference = userPreferences || 'Balanced savings and convenience';
-
     const prompt = `You are a shopping assistant. Here are nearby stores:
     ${JSON.stringify(withDistances, null, 2)}
     
-    User preference: ${preference}
+    User preference: Balanced savings and convenience.
     
-    Recommend ONE store and explain why in 2-3 sentences, considering price vs distance tradeoff.`;
+    Recommend ONE to THREE stores and explain why in 2-3 sentences, considering price vs distance tradeoff.`;
         
 
     const contents = [
