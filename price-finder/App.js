@@ -400,15 +400,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.bg,
   },
-  backButton: {
-    position: 'absolute',
-    top: 16 + (Platform.OS === 'android' ? 16 : 0),
-    left: 16,
-    zIndex: 2,
-    backgroundColor: 'rgba(255,255,255,0.8)',
-    borderRadius: 8,
-    padding: 6,
-  },
+
   shutterRow: {
     position: 'absolute',
     bottom: 24,
@@ -429,7 +421,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#445a44',
     borderRadius: 999,
     alignItems: 'center',
-    alignself: 'center',
+    alignSelf: 'center',
     top: -18,
     shadowColor: '#000',
     shadowOpacity: 0.25,
