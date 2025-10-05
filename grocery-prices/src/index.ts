@@ -53,6 +53,7 @@ type Row = {
   lat?: number;
   lng?: number;
   distance_km?: number;
+  imageUrl?: string | null;
 };
 
 type GeoHit = { address: string; lat?: number; lng?: number };
@@ -313,7 +314,10 @@ app.get("/v1/prices/search", async (req, res) => {
         continue;
       }
       
-      rough.push({ store, price, location: "…" });
+      // ADD IMAGE URL
+      const imageUrl = r.thumbnail || r.image || null;
+      
+      rough.push({ store, price, location: "…", imageUrl });
     }
 
     console.log(`📦 Raw items from SerpAPI: ${items.length}`);
