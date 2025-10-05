@@ -147,7 +147,17 @@ function dedupeCheapest(rows: Row[]): Row[] {
   const by = new Map<string, Row>();
   for (const r of rows) {
     const k = r.store.toLowerCase();
-    if (!by.has(k) || r.price < by.get(k)!.price) by.set(k, r);
+    const existing = by.get(k);
+    
+    // Keep the one with cheaper price, but prefer entries with images
+    if (!existing) {
+      by.set(k, r);
+    } else if (r.price < existing.price) {
+      by.set(k, r);
+    } else if (r.price === existing.price && r.imageUrl && !existing.imageUrl) {
+      // Same price but this one has an image
+      by.set(k, r);
+    }
   }
   return [...by.values()];
 }
@@ -314,8 +324,9 @@ app.get("/v1/prices/search", async (req, res) => {
         continue;
       }
       
-      // ADD IMAGE URL
+      // ADD IMAGE URL - check multiple fields
       const imageUrl = r.thumbnail || r.image || null;
+      console.log(`🖼️  Image URL for ${store}: ${imageUrl || 'NONE'}`);
       
       rough.push({ store, price, location: "…", imageUrl });
     }
@@ -323,9 +334,10 @@ app.get("/v1/prices/search", async (req, res) => {
     console.log(`📦 Raw items from SerpAPI: ${items.length}`);
     console.log(`📦 After rough parsing & filtering: ${rough.length}`);
 
-    // 3) Dedupe cheapest per store
+    // 3) Dedupe cheapest per store (now preserves images better)
     let rows = dedupeCheapest(rough);
     console.log(`📦 After deduplication: ${rows.length}`);
+    console.log(`📦 Rows with images: ${rows.filter(r => r.imageUrl).length}`);
 
     // 4) Sort logic
     const limit = top ?? 5;
@@ -379,7 +391,8 @@ app.get("/v1/prices/search", async (req, res) => {
         return a.distance_km! - b.distance_km!;
       }).slice(0, limit);
 
-      // KEEP lat/lng in response for map pins
+      // KEEP lat/lng AND imageUrl in response
+      console.log(`📦 Final response (${rows.length} rows):`, rows.map(r => ({ store: r.store, hasImage: !!r.imageUrl })));
       return res.json(rows);
     }
 
@@ -415,8 +428,9 @@ app.get("/v1/prices/search", async (req, res) => {
     rows = rows.sort((a, b) => a.price - b.price).slice(0, limit);
     
     console.log(`📦 Final result count: ${rows.length}`);
+    console.log(`📦 Final response:`, rows.map(r => ({ store: r.store, hasImage: !!r.imageUrl, imageUrl: r.imageUrl })));
     
-    // KEEP lat/lng in response for map pins
+    // KEEP lat/lng AND imageUrl in response
     return res.json(rows);
     
   } catch (err: any) {
