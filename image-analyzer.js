@@ -1,13 +1,10 @@
-import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
-import * as fs from "node:fs";
-
 /**
  * What does this file do? 
  * Takes an image input, sends it to Gemini and returns back product info in JSON format.
  **/
 
-async function identifyItem(base64Image, apiKey) {
+export async function identifyItem(base64Image, apiKey) {
     const ai = new GoogleGenAI(apiKey);
 
     const contents = [
@@ -41,19 +38,3 @@ async function identifyItem(base64Image, apiKey) {
     const productInfo = JSON.parse(response.text);
     return productInfo;
 }
-
-async function test() {
-    const testImage = fs.readFileSync("test-image.jpg", {
-        encoding: "base64",
-    });
-    
-    try {
-        const result = await identifyItem(testImage, process.env.GEMINI_API_KEY);
-        console.log('✅ Success!');
-        console.log('Result:', result);
-    } catch (error) {
-        console.error('❌ Error:', error.message);
-    }
-}
-
-test();
